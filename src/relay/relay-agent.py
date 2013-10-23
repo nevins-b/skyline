@@ -10,35 +10,22 @@ import zmq
 sys.path.insert(0, dirname(dirname(abspath(__file__))))
 import settings
 
-from listen import Listen
-from roomba import Roomba
-from worker import Worker
+from relay import Relay
 
 # TODO: http://stackoverflow.com/questions/6728236/exception-thrown-in-multiprocessing-pool-not-detected
 
-class Horizon():
+class RelayAgent():
     def __init__(self):
         self.stdin_path = '/dev/null'
-        self.stdout_path = settings.LOG_PATH + '/horizon.log'
-        self.stderr_path = settings.LOG_PATH + '/horizon.log'
-        self.pidfile_path = settings.PID_PATH + '/horizon.pid'
+        self.stdout_path = settings.LOG_PATH + '/relay.log'
+        self.stderr_path = settings.LOG_PATH + '/relay.log'
+        self.pidfile_path = settings.PID_PATH + '/relay.pid'
         self.pidfile_timeout = 5
 
     def run(self):
-        logger.info('starting horizon agent')
+        logger.info('starting relay agent')
         pid = getpid()
-        context = zmq.Context()
-        # Start the workers
-        for i in range(settings.WORKER_PROCESSES):
-            if i == 0:
-                Worker(pid, context, canary=True).start()
-            else:
-                Worker(pid, context).start()
-
-        # Start the roomba
-        Roomba(pid).start()
-
-        # Keep yourself occupied, sucka
+        Relay().start()
         while 1:
             time.sleep(100)
 
@@ -54,18 +41,18 @@ if __name__ == "__main__":
         print 'log directory does not exist at %s' % settings.LOG_PATH
         sys.exit(1)
 
-    horizon = Horizon()
+    relay = RelayAgent()
 
-    logger = logging.getLogger("HorizonLog")
+    logger = logging.getLogger("RelayLog")
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s :: %(process)s :: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    handler = logging.FileHandler(settings.LOG_PATH + '/horizon.log')
+    handler = logging.FileHandler(settings.LOG_PATH + '/relay.log')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
     if len(sys.argv) > 1 and sys.argv[1] == 'run':
-        horizon.run()
+        relay.run()
     else:
-        daemon_runner = runner.DaemonRunner(horizon)
+        daemon_runner = runner.DaemonRunner(relay)
         daemon_runner.daemon_context.files_preserve=[handler.stream]
         daemon_runner.do_action()

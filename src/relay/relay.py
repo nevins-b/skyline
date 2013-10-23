@@ -1,3 +1,5 @@
+import zmq
+
 import socket
 from os import kill, getpid
 from Queue import Full
@@ -5,33 +7,45 @@ from multiprocessing import Process
 from struct import Struct, unpack
 from msgpack import unpackb
 from cPickle import loads
+import re
 
-import logging
-import settings
-
-logger = logging.getLogger("HorizonLog")
-
-class Listen(Process):
+class Relay(Process):
     """
     The listener is responsible for listening on a port.
     """
-    def __init__(self, port, queue, parent_pid, type="pickle"):
-        super(Listen, self).__init__()
+    def __init__(self, parent_pid):
+        super(Relay, self).__init__()
         try:
-            self.ip = settings.HORIZON_IP
+            self.ip = settings.RELAY_IP
         except AttributeError:
             # Default for backwards compatibility
             self.ip = socket.gethostname()
-        self.port = port
-        self.q = queue
-        self.daemon = True
         self.parent_pid = parent_pid
-        self.current_pid = getpid()
-        self.type = type
+        self.port = settings.get('RELAY_LISTEN_PORT', 2702)
+        self.queue_port = settings.get('RELAY_PUBLISH_PORT', 2703)
+        self.daemon = True
+        self.type = settings.get('RELAY_TYPE', 'pickle')
+        self.key = settings.get('ACCESS_KEY', '')
+        self._connect()
+
+    def _connect(self):
+        self.context = zmq.Context()
+        self.publisher = self.context.socket(zmq.PUSH)
+        self.publisher.bind(self.queue_port)
+
+    def check_if_parent_is_alive(self):
+        """
+        Self explanatory
+        """
+        try:
+            kill(self.current_pid, 0)
+            kill(self.parent_pid, 0)
+        except:
+            exit(0)
 
     def gen_unpickle(self, infile):
         """
-        Generate a pickle from a stream 
+        Generate a pickle from a stream
         """
         try:
             bunch = loads(infile)
@@ -47,18 +61,14 @@ class Listen(Process):
         while n > 0:
             buf = sock.recv(n)
             n -= len(buf)
-            data += buf 
+            data += buf
         return data
 
-    def check_if_parent_is_alive(self):
-        """
-        Self explanatory
-        """
-        try:
-            kill(self.current_pid, 0)
-            kill(self.parent_pid, 0)
-        except:
-            exit(0)
+    def white_list_rewrite(self, metric):
+        if not metric[0].starts with self.key:
+            return None
+        else:
+            return metric[0] = metric[0].replace('{0}.'.format(self.key ,'')
 
     def listen_pickle(self):
         """
@@ -66,7 +76,7 @@ class Listen(Process):
         """
         while 1:
             try:
-                # Set up the TCP listening socket 
+                # Set up the TCP listening socket
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
                 s.bind((self.ip, self.port))
@@ -76,29 +86,19 @@ class Listen(Process):
 
                 (conn, address) = s.accept()
                 logger.info('connection from %s:%s' % (address[0], self.port))
-        
-                chunk = []
+
                 while 1:
                     self.check_if_parent_is_alive()
                     try:
-                        length = Struct('!I').unpack(self.read_all(conn, 4)) 
+                        length = Struct('!I').unpack(self.read_all(conn, 4))
                         body = self.read_all(conn, length[0])
 
                         # Iterate and chunk each individual datapoint
                         for bunch in self.gen_unpickle(body):
                             for metric in bunch:
-                                chunk.append(metric)
-
-                                # Queue the chunk and empty the variable
-                                if len(chunk) > settings.CHUNK_SIZE:
-                                    try:
-                                        self.q.put(list(chunk), block=False)
-                                        chunk[:] = []
-
-                                    # Drop chunk if queue is full
-                                    except Full:
-                                        logger.info('queue is full, dropping datapoints')
-                                        chunk[:] = []
+                                metric = white_list_rewrite(metric)
+                                if metric:
+                                    self.publisher.send(metric)
 
                     except Exception as e:
                         logger.info(e)
@@ -119,23 +119,13 @@ class Listen(Process):
                 s.bind((self.ip, self.port))
                 logger.info('listening over udp for messagepack on %s' % self.port)
 
-                chunk = []
                 while 1:
                     self.check_if_parent_is_alive()
                     data, addr = s.recvfrom(1024)
                     metric = unpackb(data)
-                    chunk.append(metric)
-
-                    # Queue the chunk and empty the variable
-                    if len(chunk) > settings.CHUNK_SIZE:
-                        try:
-                            self.q.put(list(chunk), block=False)
-                            chunk[:] = []
-
-                        # Drop chunk if queue is full
-                        except Full:
-                            logger.info('queue is full, dropping datapoints')
-                            chunk[:] = []
+                    metric = white_list_rewrite(metric)
+                        if metric:
+                            self.publisher.send(metric)
 
             except Exception as e:
                 logger.info('can\'t connect to socket: ' + str(e))
@@ -148,7 +138,7 @@ class Listen(Process):
         logger.info('started listener')
 
         if self.type == 'pickle':
-        	self.listen_pickle()
+                self.listen_pickle()
         elif self.type == 'udp':
             self.listen_udp()
         else:

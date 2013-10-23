@@ -35,7 +35,7 @@ var handle_data = function(data) {
 // The callback to this function is handle_data()
 var pull_data = function() {
     $.ajax({
-        url: "/static/dump/anomalies.json",
+        url: "/dump/anomalies.json",
         dataType: 'jsonp'
     });
 }
@@ -45,16 +45,16 @@ var handle_interaction = function() {
     $('.sub:contains(' + selected + ')').addClass('selected');
 
     anomalous_datapoint = parseInt($($('.selected').children()[2]).text())
- 
+
     $.get("/api?metric=" + MINI_NAMESPACE + "" + selected, function(d){
         mini_data = JSON.parse(d)['results']
         mini_graph.updateOptions( { 'file': mini_data } );
-    }); 
+    });
 
     $.get("/api?metric=" + FULL_NAMESPACE + "" + selected, function(d){
         big_data = JSON.parse(d)['results']
         big_graph.updateOptions( { 'file': big_data } );
-    }); 
+    });
 
     $('#graph_title').html(selected);
 
@@ -168,7 +168,7 @@ $(function(){
         }
     })
 
-    // Responsive graphs 
+    // Responsive graphs
     $(window).resize(function() {
         resize_window();
     });
@@ -195,7 +195,7 @@ Mousetrap.bind(['up', 'down'], function(ev) {
     if ($(next).html() != undefined) {
         selected = $(next).find('.name')[0].innerHTML;
         handle_interaction();
-    } 
+    }
 
     return false;
 }, 'keydown');

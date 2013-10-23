@@ -1,5 +1,4 @@
 import logging
-from redis import StrictRedis
 from time import time, sleep
 from threading import Thread
 from collections import defaultdict
@@ -10,6 +9,8 @@ from math import ceil
 import traceback
 import operator
 import settings
+import socket
+from ring import RedisRing
 
 from alerters import trigger_alert
 from algorithms import run_selected_algorithm
@@ -23,7 +24,7 @@ class Analyzer(Thread):
         Initialize the Analyzer
         """
         super(Analyzer, self).__init__()
-        self.redis_conn = StrictRedis(unix_socket_path = settings.REDIS_SOCKET_PATH)
+        self.ring = RedisRing(settings.REDIS_BACKENDS)
         self.daemon = True
         self.parent_pid = parent_pid
         self.current_pid = getpid()
@@ -43,15 +44,37 @@ class Analyzer(Thread):
             exit(0)
 
     def spin_process(self, i, unique_metrics):
+        process_key = '.'.join(['skyline','analyzer', socket.gethostname(), str(i)])
+        alive_key = '.'.join([process_key, 'alive'])
+        self.ring.run('set', alive_key, 1)
+        self.ring.run('expire', alive_key, 30)
         """
         Assign a bunch of metrics for a process to analyze.
         """
+        processes = list(self.ring.run('zrange', settings.ANALYZER_PROCESS_KEY, 0, -1))
+        for key in processes:
+            value = self.ring.run('get', key)
+            if not value:
+                self.ring.run('zrem', settings.ANALYZER_PROCESS_KEY, 0, key)
+
+        # Add current process to index and determine position
+        if not self.ring.run('zscore', settings.ANALYZER_PROCESS_KEY, alive_key):
+            self.ring.run('zadd', settings.ANALYZER_PROCESS_KEY, time(), alive_key)
+        self.ring.run('expire', settings.ANALYZER_PROCESS_KEY, 60)
+        process_position = self.ring.run('zrank', settings.ANALYZER_PROCESS_KEY, alive_key) + 1
+        process_count = self.ring.run('zcard', settings.ANALYZER_PROCESS_KEY)
+
+        # If there are less processes then we know are going to be running assume
+        # the others will start
+        if process_count < settings.ANALYZER_PROCESSES:
+            process_count = settings.ANALYZER_PROCESSES
+
         # Discover assigned metrics
-        keys_per_processor = int(ceil(float(len(unique_metrics)) / float(settings.ANALYZER_PROCESSES)))
-        if i == settings.ANALYZER_PROCESSES:
+        keys_per_processor = int(ceil(float(len(unique_metrics)) / float(process_count)))
+        if process_position == process_count:
             assigned_max = len(unique_metrics)
         else:
-            assigned_max = i * keys_per_processor
+            assigned_max = process_position * keys_per_processor
         assigned_min = assigned_max - keys_per_processor
         assigned_keys = range(assigned_min, assigned_max)
 
@@ -63,7 +86,7 @@ class Analyzer(Thread):
             return
 
         # Multi get series
-        raw_assigned = self.redis_conn.mget(assigned_metrics)
+        raw_assigned = self.ring.run('mget', assigned_metrics)
 
         # Make process-specific dicts
         exceptions = defaultdict(int)
@@ -108,6 +131,16 @@ class Analyzer(Thread):
                 exceptions['Other'] += 1
                 logger.info(traceback.format_exc())
 
+        # if anomalies detected Pack and Write anomoly data to Redis
+        if len(anomalous_metrics) > 0:
+            packed = Packer().pack(anomalous_metrics)
+            self.ring.run('set', process_key, packed)
+            # expire the key in 30s so anomalys don't show up for too long
+            self.ring.run('expire', process_key, 30)
+            self.ring.run('sadd', settings.ANALYZER_ANOMALY_KEY, process_key)
+            # expire the key in 60s so anomalys don't show up for too long
+            self.ring.run('expire', settings.ANALYZER_ANOMALY_KEY, 60)
+
         # Collate process-specific dicts to main dicts
         with self.lock:
             for key, value in anomaly_breakdown.items():
@@ -130,18 +163,16 @@ class Analyzer(Thread):
         """
         while 1:
             now = time()
-
             # Make sure Redis is up
             try:
-                self.redis_conn.ping()
+                self.ring.check_connections()
             except:
-                logger.error('skyline can\'t connect to redis at socket path %s' % settings.REDIS_SOCKET_PATH)
                 sleep(10)
-                self.redis_conn = StrictRedis(unix_socket_path = settings.REDIS_SOCKET_PATH)
+                self.ring = RedisRing(settings.REDIS_BACKENDS)
                 continue
 
             # Discover unique metrics
-            unique_metrics = list(self.redis_conn.smembers(settings.FULL_NAMESPACE + 'unique_metrics'))
+            unique_metrics = list(self.ring.run('smembers', settings.FULL_NAMESPACE + 'unique_metrics'))
 
             if len(unique_metrics) == 0:
                 logger.info('no metrics in redis. try adding some - see README')
@@ -170,21 +201,13 @@ class Analyzer(Thread):
                         if alert[0] in metric[1]:
                             cache_key = 'last_alert.%s.%s' % (alert[1], metric[1])
                             try:
-                                last_alert = self.redis_conn.get(cache_key)
+                                last_alert = self.ring.run('get', cache_key)
                                 if not last_alert:
-                                    self.redis_conn.setex(cache_key, alert[2], packb(metric[0]))
+                                    self.ring.run('setex', cache_key, alert[2], packb(metric[0]))
                                     trigger_alert(alert, metric)
 
                             except Exception as e:
                                 logger.error("couldn't send alert: %s" % e)
-
-            # Write anomalous_metrics to static webapp directory
-            filename = path.abspath(path.join(path.dirname( __file__ ), '..', settings.ANOMALY_DUMP))
-            with open(filename, 'w') as fh:
-                # Make it JSONP with a handle_data() function
-                anomalous_metrics = list(self.anomalous_metrics)
-                anomalous_metrics.sort(key=operator.itemgetter(1))
-                fh.write('handle_data(%s)' % anomalous_metrics)
 
             # Log progress
             logger.info('seconds to run    :: %.2f' % (time() - now))
@@ -201,7 +224,7 @@ class Analyzer(Thread):
                 system('echo skyline.analyzer.total_analyzed %d %s | nc -w 3 %s 2003' % ((len(unique_metrics) - sum(self.exceptions.values())), now, host))
 
             # Check canary metric
-            raw_series = self.redis_conn.get(settings.FULL_NAMESPACE + settings.CANARY_METRIC)
+            raw_series = self.ring.run('get', settings.FULL_NAMESPACE + settings.CANARY_METRIC)
             if raw_series is not None:
                 unpacker = Unpacker(use_list = False)
                 unpacker.feed(raw_series)

@@ -6,12 +6,13 @@ from msgpack import Unpacker
 from flask import Flask, request, render_template
 from daemon import runner
 from os.path import dirname, abspath
+from ring import RedisRing
 
 # add the shared settings file to namespace
 sys.path.insert(0, dirname(dirname(abspath(__file__))))
 import settings
 
-REDIS_CONN = redis.StrictRedis(unix_socket_path=settings.REDIS_SOCKET_PATH)
+RING = RedisRing(settings.REDIS_BACKENDS)
 
 app = Flask(__name__)
 app.config['PROPAGATE_EXCEPTIONS'] = True
@@ -48,6 +49,36 @@ def data():
         error = "Error: " + e
         resp = json.dumps({'results': error})
         return resp, 500
+
+@app.route("/dump/anomalies.json", methods=['GET'])
+def anomalies():
+    resp = 'handle_data([])'
+    try:
+        analyzer_key_node = REDIS_BACKENDS.get_node(settings.ANALYZER_ANOMALY_KEY)
+        anomaly_keys = RING.run('smembers', settings.ANALYZER_ANOMALY_KEY)
+        anomalies = {}
+        if not anomaly_keys:
+            logger.info("No anomaly key found!")
+            return resp, 200
+        for key in list(anomaly_keys):
+            raw_anomalies = RING.run('get',key)
+            if not raw_anomalies:
+                logger.info("Can't get anomalies for key %s, removing it from set" % key)
+                RING.run('srem', settings.ANALYZER_ANOMALY_KEY, key)
+                continue
+            unpacker = Unpacker(use_list = False)
+            unpacker.feed(raw_anomalies)
+            for item in unpacker:
+                anomalies.update(item)
+        anomaly_list = []
+        for anom, value in anomalies.iteritems():
+                anomaly_list.append([value, anom])
+        if len(anomaly_list) > 0:
+            anomaly_list.sort(key=operator.itemgetter(1))
+            resp = 'handle_data(%s)' % anomaly_list
+    except Exception as e:
+        logger.error("Error getting anomalies: %s" % str(e))
+    return resp, 200
 
 class App():
     def __init__(self):

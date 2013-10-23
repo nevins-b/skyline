@@ -1,10 +1,11 @@
 from os import kill
-from redis import StrictRedis, WatchError
+from ring import RedisRing
 from multiprocessing import Process
 from threading import Thread
 from msgpack import Unpacker, packb
 from types import TupleType
 from time import time, sleep
+import socket
 
 import logging
 import settings
@@ -18,7 +19,7 @@ class Roomba(Thread):
     """
     def __init__(self, parent_pid):
         super(Roomba, self).__init__()
-        self.redis_conn = StrictRedis(unix_socket_path = settings.REDIS_SOCKET_PATH)
+        self.ring = RedisRing(settings.REDIS_BACKENDS)
         self.daemon = True
         self.parent_pid = parent_pid
 
@@ -36,15 +37,22 @@ class Roomba(Thread):
         Trim metrics that are older than settings.FULL_DURATION and
         purge old metrics.
         """
-        begin = time()
+        process_key = '.'.join(['skyline','roomba', str(namespace)])
+        hostname = socket.gethostname()
+        if self.ring.run('get', process_key) != hostname:
+            return
+        else:
+            self.ring.run('set', process_key, hostname)
+            self.ring.run('expire', process_key, 600)
 
+        begin = time()
         # Discover assigned metrics
-        unique_metrics = list(self.redis_conn.smembers(namespace + 'unique_metrics'))
+        unique_metrics = list(self.ring.run('smembers', namespace + 'unique_metrics'))
         keys_per_processor = len(unique_metrics) / settings.ROOMBA_PROCESSES
         assigned_max = i * keys_per_processor
         assigned_min = assigned_max - keys_per_processor
         assigned_keys = range(assigned_min, assigned_max)
- 
+
         # Compile assigned metrics
         assigned_metrics = [unique_metrics[index] for index in assigned_keys]
 
@@ -53,7 +61,6 @@ class Roomba(Thread):
         for i in xrange(len(assigned_metrics)):
             self.check_if_parent_is_alive()
 
-            pipe = self.redis_conn.pipeline()
             now = time()
             key = assigned_metrics[i]
 
@@ -61,10 +68,10 @@ class Roomba(Thread):
                 # WATCH the key
                 pipe.watch(key)
 
-                # Everything below NEEDS to happen before another datapoint 
-                # comes in. If your data has a very small resolution (<.1s), 
+                # Everything below NEEDS to happen before another datapoint
+                # comes in. If your data has a very small resolution (<.1s),
                 # this technique may not suit you.
-                raw_series = pipe.get(key)
+                raw_series = self.ring.run('get', key)
                 unpacker = Unpacker(use_list = False)
                 unpacker.feed(raw_series)
                 timeseries = sorted([ unpacked for unpacked in unpacker ])
@@ -76,9 +83,8 @@ class Roomba(Thread):
                 try:
                     if not isinstance(timeseries[0], TupleType):
                         if timeseries[0] < now - duration:
-                            pipe.delete(key)
-                            pipe.srem(namespace + 'unique_metrics', key)
-                            pipe.execute()
+                            self.ring.run('delete', key)
+                            self.ring.run('srem', namespace + 'unique_metrics', key)
                             euthanized += 1
                         continue
                 except IndexError:
@@ -86,9 +92,8 @@ class Roomba(Thread):
 
                 # Check if the last value is too old and purge
                 if timeseries[-1][0] < now - duration:
-                    pipe.delete(key)
-                    pipe.srem(namespace + 'unique_metrics', key)
-                    pipe.execute()
+                    self.ring.run('delete', key)
+                    self.ring.run('srem', namespace + 'unique_metrics', key)
                     euthanized += 1
                     continue
 
@@ -96,10 +101,10 @@ class Roomba(Thread):
                 temp = set()
                 temp_add = temp.add
                 delta = now - duration
-                trimmed = [ 
-                            tuple for tuple in timeseries 
-                            if tuple[0] > delta 
-                            and tuple[0] not in temp 
+                trimmed = [
+                            tuple for tuple in timeseries
+                            if tuple[0] > delta
+                            and tuple[0] not in temp
                             and not temp_add(tuple[0])
                         ]
 
@@ -110,13 +115,13 @@ class Roomba(Thread):
                     if len(trimmed) <= 15:
                         value = btrimmed[1:]
                     elif len(trimmed) <= 65535:
-                        value = btrimmed[3:] 
+                        value = btrimmed[3:]
                     else:
                         value = btrimmed[5:]
                     pipe.set(key, value)
                 else:
-                    pipe.delete(key)
-                    pipe.srem(namespace + 'unique_metrics', key)
+                    self.ring.run('delete', key)
+                    self.ring.run('srem', namespace + 'unique_metrics', key)
                     euthanized += 1
 
                 pipe.execute()
@@ -126,9 +131,8 @@ class Roomba(Thread):
                 assigned_metrics.append(key)
             except Exception as e:
                 # If something bad happens, zap the key and hope it goes away
-                pipe.delete(key)
-                pipe.srem(namespace + 'unique_metrics', key)
-                pipe.execute()
+                self.ring.run('delete', key)
+                self.ring.run('srem', namespace + 'unique_metrics', key)
                 euthanized += 1
                 logger.info(e)
                 logger.info("Euthanizing " + key)
@@ -155,20 +159,27 @@ class Roomba(Thread):
 
             # Make sure Redis is up
             try:
-                self.redis_conn.ping()
+                self.ring.check_connections()
             except:
-                logger.error('roomba can\'t connect to redis at socket path %s' % settings.REDIS_SOCKET_PATH)
                 sleep(10)
-                self.redis_conn = StrictRedis(unix_socket_path = settings.REDIS_SOCKET_PATH)
+                self.ring = RedisRing(settings.REDIS_BACKENDS)
                 continue
 
             # Spawn processes
             pids = []
             for i in range(1, settings.ROOMBA_PROCESSES + 1):
-                p = Process(target=self.vacuum, args=(i, settings.MINI_NAMESPACE, settings.MINI_DURATION + settings.ROOMBA_GRACE_TIME))
+                p = Process(
+                    target=self.vacuum,
+                    args=(i,
+                        settings.MINI_NAMESPACE,
+                        settings.MINI_DURATION + settings.ROOMBA_GRACE_TIME))
                 pids.append(p)
                 p.start()
-                p = Process(target=self.vacuum, args=(i, settings.FULL_NAMESPACE, settings.FULL_DURATION + settings.ROOMBA_GRACE_TIME))
+                p = Process(
+                    target=self.vacuum,
+                    args=(i,
+                        settings.FULL_NAMESPACE,
+                        settings.FULL_DURATION + settings.ROOMBA_GRACE_TIME))
                 pids.append(p)
                 p.start()
 
