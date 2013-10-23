@@ -1,8 +1,13 @@
 import logging
+<<<<<<< HEAD
+=======
+from Queue import Empty
+from redis import StrictRedis
+>>>>>>> bcb25d59fa66f2f6261386b406941623c10ebe49
 from time import time, sleep
 from threading import Thread
 from collections import defaultdict
-from multiprocessing import Process, Manager, Lock
+from multiprocessing import Process, Manager, Queue
 from msgpack import Unpacker, unpackb, packb
 from os import path, kill, getpid, system
 from math import ceil
@@ -18,6 +23,7 @@ from algorithm_exceptions import *
 
 logger = logging.getLogger("AnalyzerLog")
 
+
 class Analyzer(Thread):
     def __init__(self, parent_pid):
         """
@@ -28,10 +34,9 @@ class Analyzer(Thread):
         self.daemon = True
         self.parent_pid = parent_pid
         self.current_pid = getpid()
-        self.lock = Lock()
-        self.exceptions = Manager().dict()
-        self.anomaly_breakdown = Manager().dict()
         self.anomalous_metrics = Manager().list()
+        self.exceptions_q = Queue()
+        self.anomaly_breakdown_q = Queue()
 
     def check_if_parent_is_alive(self):
         """
@@ -155,7 +160,8 @@ class Analyzer(Thread):
                 else:
         	        self.exceptions[key] += value
 
-
+        for key, value in exceptions.items():
+            self.exceptions_q.put((key, value))
 
     def run(self):
         """
@@ -194,6 +200,29 @@ class Analyzer(Thread):
             for p in pids:
                 p.join()
 
+            # Grab data from the queue and populate dictionaries
+            exceptions = dict()
+            anomaly_breakdown = dict()
+            while 1:
+                try:
+                    key, value = self.anomaly_breakdown_q.get_nowait()
+                    if key not in anomaly_breakdown.keys():
+                        anomaly_breakdown[key] = value
+                    else:
+                        anomaly_breakdown[key] += value
+                except Empty:
+                    break
+
+            while 1:
+                try:
+                    key, value = self.exceptions_q.get_nowait()
+                    if key not in exceptions.keys():
+                        exceptions[key] = value
+                    else:
+                        exceptions[key] += value
+                except Empty:
+                    break
+
             # Send alerts
             if settings.ENABLE_ALERTS:
                 for alert in settings.ALERTS:
@@ -212,16 +241,16 @@ class Analyzer(Thread):
             # Log progress
             logger.info('seconds to run    :: %.2f' % (time() - now))
             logger.info('total metrics     :: %d' % len(unique_metrics))
-            logger.info('total analyzed    :: %d' % (len(unique_metrics) - sum(self.exceptions.values())))
+            logger.info('total analyzed    :: %d' % (len(unique_metrics) - sum(exceptions.values())))
             logger.info('total anomalies   :: %d' % len(self.anomalous_metrics))
-            logger.info('exception stats   :: %s' % self.exceptions)
-            logger.info('anomaly breakdown :: %s' % self.anomaly_breakdown)
+            logger.info('exception stats   :: %s' % exceptions)
+            logger.info('anomaly breakdown :: %s' % anomaly_breakdown)
 
             # Log to Graphite
             if settings.GRAPHITE_HOST != '':
                 host = settings.GRAPHITE_HOST.replace('http://', '')
                 system('echo skyline.analyzer.run_time %.2f %s | nc -w 3 %s 2003' % ((time() - now), now, host))
-                system('echo skyline.analyzer.total_analyzed %d %s | nc -w 3 %s 2003' % ((len(unique_metrics) - sum(self.exceptions.values())), now, host))
+                system('echo skyline.analyzer.total_analyzed %d %s | nc -w 3 %s 2003' % ((len(unique_metrics) - sum(exceptions.values())), now, host))
 
             # Check canary metric
             raw_series = self.ring.run('get', settings.FULL_NAMESPACE + settings.CANARY_METRIC)
@@ -238,14 +267,10 @@ class Analyzer(Thread):
                     system('echo skyline.analyzer.duration %.2f %s | nc -w 3 %s 2003' % (time_human, now, host))
                     system('echo skyline.analyzer.projected %.2f %s | nc -w 3 %s 2003' % (projected, now, host))
 
-
             # Reset counters
             self.anomalous_metrics[:] = []
-            self.exceptions = Manager().dict()
-            self.anomaly_breakdown = Manager().dict()
 
             # Sleep if it went too fast
             if time() - now < 5:
                 logger.info('sleeping due to low run time...')
                 sleep(10)
-

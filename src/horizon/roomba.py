@@ -74,7 +74,7 @@ class Roomba(Thread):
                 raw_series = self.ring.run('get', key)
                 unpacker = Unpacker(use_list = False)
                 unpacker.feed(raw_series)
-                timeseries = sorted([ unpacked for unpacked in unpacker ])
+                timeseries = sorted([unpacked for unpacked in unpacker])
 
                 # Put pipe back in multi mode
                 pipe.multi()
@@ -102,11 +102,19 @@ class Roomba(Thread):
                 temp_add = temp.add
                 delta = now - duration
                 trimmed = [
+<<<<<<< HEAD
                             tuple for tuple in timeseries
                             if tuple[0] > delta
                             and tuple[0] not in temp
                             and not temp_add(tuple[0])
                         ]
+=======
+                    tuple for tuple in timeseries
+                    if tuple[0] > delta
+                    and tuple[0] not in temp
+                    and not temp_add(tuple[0])
+                ]
+>>>>>>> bcb25d59fa66f2f6261386b406941623c10ebe49
 
                 # Purge if everything was deleted, set key otherwise
                 if len(trimmed) > 0:
@@ -140,7 +148,7 @@ class Roomba(Thread):
                 pipe.reset()
 
         logger.info('operated on %s in %f seconds' % (namespace, time() - begin))
-        logger.info('%s keyspace is %d' % (namespace , (len(assigned_metrics) - euthanized)))
+        logger.info('%s keyspace is %d' % (namespace, (len(assigned_metrics) - euthanized)))
         logger.info('blocked %d times' % blocked)
         logger.info('euthanized %d geriatric keys' % euthanized)
 
@@ -186,4 +194,3 @@ class Roomba(Thread):
             # Send wait signal to zombie processes
             for p in pids:
                 p.join()
-

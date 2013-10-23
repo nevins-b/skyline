@@ -12,6 +12,7 @@ import settings
 
 logger = logging.getLogger("HorizonLog")
 
+
 class Worker(Process):
     """
     The worker processes chunks from the queue and appends
@@ -94,4 +95,3 @@ class Worker(Process):
 
                 except Exception as e:
                     logger.error("worker error: " + str(e))
-

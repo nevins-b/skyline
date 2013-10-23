@@ -38,6 +38,7 @@ GRAPHITE_HOST = 'http://your_graphite_host.com'
 # on the webapp. Include http://.
 OCULUS_HOST = 'http://your_oculus_host.com'
 
+=======
 """
 Relay Settings
 """
@@ -88,16 +89,16 @@ CANARY_METRIC = 'statsd.numStats'
 # These are the algorithms that the Analyzer will run. To add a new algorithm,
 # you must both define the algorithm in algorithms.py and add its name here.
 ALGORITHMS = [
-                'first_hour_average',
-                'mean_subtraction_cumulation',
-                'stddev_from_average',
-                'stddev_from_moving_average',
-                'least_squares',
-                'grubbs',
-                'histogram_bins',
-                'median_absolute_deviation',
-                'ks_test',
-             ]
+    'first_hour_average',
+    'mean_subtraction_cumulation',
+    'stddev_from_average',
+    'stddev_from_moving_average',
+    'least_squares',
+    'grubbs',
+    'histogram_bins',
+    'median_absolute_deviation',
+    'ks_test',
+]
 
 # This is the number of algorithms that must return True before a metric is
 # classified as anomalous.
@@ -118,8 +119,8 @@ ENABLE_ALERTS = True
 #          ("metric3", "hipchat", EXPIRATION_TIME),
 #         )
 ALERTS = (
-			("skyline", "smtp", 1800),
-		 )
+    ("skyline", "smtp", 1800),
+)
 
 # Each alert module requires additional information.
 SMTP_OPTS = {
@@ -137,7 +138,7 @@ HIPCHAT_OPTS = {
     "auth_token": "pagerduty_auth_token",
     # list of hipchat room_ids to notify about each anomaly
     # (similar to SMTP_OPTS['recipients'])
-    "rooms":{
+    "rooms": {
         "skyline": (12345,),
     },
     # Background color of hipchat messages
@@ -204,4 +205,3 @@ WEBAPP_IP = '127.0.0.1'
 
 # The port for the webapp
 WEBAPP_PORT = 1500
-

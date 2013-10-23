@@ -78,7 +78,7 @@ class Relay(Process):
             try:
                 # Set up the TCP listening socket
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 s.bind((self.ip, self.port))
                 s.setblocking(1)
                 s.listen(5)
@@ -87,6 +87,10 @@ class Relay(Process):
                 (conn, address) = s.accept()
                 logger.info('connection from %s:%s' % (address[0], self.port))
 
+<<<<<<< HEAD:src/relay/relay.py
+=======
+                chunk = []
+>>>>>>> bcb25d59fa66f2f6261386b406941623c10ebe49:src/horizon/listen.py
                 while 1:
                     self.check_if_parent_is_alive()
                     try:
@@ -138,7 +142,11 @@ class Relay(Process):
         logger.info('started listener')
 
         if self.type == 'pickle':
+<<<<<<< HEAD:src/relay/relay.py
                 self.listen_pickle()
+=======
+            self.listen_pickle()
+>>>>>>> bcb25d59fa66f2f6261386b406941623c10ebe49:src/horizon/listen.py
         elif self.type == 'udp':
             self.listen_udp()
         else:

@@ -17,19 +17,23 @@ RING = RedisRing(settings.REDIS_BACKENDS)
 app = Flask(__name__)
 app.config['PROPAGATE_EXCEPTIONS'] = True
 
+
 @app.route("/")
 def index():
     return render_template('index.html'), 200
 
+
 @app.route("/app_settings")
 def app_settings():
-    app_settings = {'GRAPHITE_HOST': settings.GRAPHITE_HOST,
-                    'OCULUS_HOST': settings.OCULUS_HOST,
-                    'MINI_NAMESPACE': settings.MINI_NAMESPACE,
-                    'FULL_NAMESPACE': settings.FULL_NAMESPACE
-                   }
+    app_settings = {
+        'GRAPHITE_HOST': settings.GRAPHITE_HOST,
+        'OCULUS_HOST': settings.OCULUS_HOST,
+        'MINI_NAMESPACE': settings.MINI_NAMESPACE,
+        'FULL_NAMESPACE': settings.FULL_NAMESPACE
+    }
     resp = json.dumps(app_settings)
     return resp, 200
+
 
 @app.route("/api", methods=['GET'])
 def data():
@@ -85,7 +89,7 @@ class App():
         self.stdin_path = '/dev/null'
         self.stdout_path = settings.LOG_PATH + '/webapp.log'
         self.stderr_path = settings.LOG_PATH + '/webapp.log'
-        self.pidfile_path =  settings.PID_PATH + '/webapp.pid'
+        self.pidfile_path = settings.PID_PATH + '/webapp.pid'
         self.pidfile_timeout = 5
 
     def run(self):
@@ -114,5 +118,5 @@ if __name__ == "__main__":
         webapp.run()
     else:
         daemon_runner = runner.DaemonRunner(webapp)
-        daemon_runner.daemon_context.files_preserve=[handler.stream]
+        daemon_runner.daemon_context.files_preserve = [handler.stream]
         daemon_runner.do_action()
